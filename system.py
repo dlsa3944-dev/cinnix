@@ -6,6 +6,7 @@ import random
 import re
 import shlex
 import threading
+import time
 import tkinter as tk
 import urllib.error
 import urllib.parse
@@ -2004,6 +2005,9 @@ class CinnixSystem:
         self.startup_frame = None
         self.boot_progress = 0
         self.install_progress = 0
+        self.fps_counter = 0
+        self.fps_last_time = time.perf_counter()
+        self.performance_running = False
         self.oobe_step = 0
         self.oobe_data = {
             "language": "Português",
@@ -2257,6 +2261,7 @@ class CinnixSystem:
             self.create_desktop_icons()
             self.shell_ready = True
             self.update_clock()
+            self.start_performance_monitor()
         if locked:
             self.show_lock_screen(first_login=True)
         else:
@@ -2314,6 +2319,10 @@ class CinnixSystem:
         self.theme_button = tk.Button(self.tray, text="◐", command=self.toggle_theme, width=4)
         self.style_panel_button(self.theme_button)
         self.theme_button.pack(side="left", padx=4, pady=5)
+        self.fps_label = tk.Label(self.tray, text="FPS --", bg=self.theme["panel"], fg="#d7f5d0", padx=8, font=("Consolas", 9))
+        self.fps_label.pack(side="left", fill="y")
+        self.ram_label = tk.Label(self.tray, text="RAM -- MB", bg=self.theme["panel"], fg="#d7f5d0", padx=8, font=("Consolas", 9))
+        self.ram_label.pack(side="left", fill="y")
         self.clock = tk.Label(self.tray, text="", bg=self.theme["panel"], fg="white", padx=10)
         self.clock.pack(side="left", fill="y")
 
@@ -2591,6 +2600,71 @@ class CinnixSystem:
         self.clock.configure(text=datetime.datetime.now().strftime(fmt))
         self.root.after(1000, self.update_clock)
 
+    def start_performance_monitor(self):
+        if self.performance_running:
+            return
+        self.performance_running = True
+        self.fps_counter = 0
+        self.fps_last_time = time.perf_counter()
+        self.fps_label.configure(text="FPS 00.0")
+        self.ram_label.configure(text=f"RAM {self.process_memory_mb():05.1f} MB")
+        self.performance_tick()
+
+    def performance_tick(self):
+        if not self.shell_ready:
+            return
+        self.fps_counter += 1
+        now = time.perf_counter()
+        elapsed = now - self.fps_last_time
+        if elapsed >= 1.0:
+            fps = self.fps_counter / elapsed
+            ram = self.process_memory_mb()
+            self.fps_label.configure(text=f"FPS {fps:04.1f}")
+            self.ram_label.configure(text=f"RAM {ram:05.1f} MB")
+            self.fps_counter = 0
+            self.fps_last_time = now
+        self.root.after(16, self.performance_tick)
+
+    def process_memory_mb(self):
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                class ProcessMemoryCounters(ctypes.Structure):
+                    _fields_ = [
+                        ("cb", ctypes.c_ulong),
+                        ("PageFaultCount", ctypes.c_ulong),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t),
+                    ]
+
+                counters = ProcessMemoryCounters()
+                counters.cb = ctypes.sizeof(counters)
+                handle = ctypes.windll.kernel32.GetCurrentProcess()
+                psapi = ctypes.WinDLL("psapi.dll")
+                psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(ProcessMemoryCounters), ctypes.c_ulong]
+                psapi.GetProcessMemoryInfo.restype = ctypes.c_int
+                ok = psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
+                if ok:
+                    return counters.WorkingSetSize / (1024 * 1024)
+            except Exception:
+                pass
+        try:
+            import resource
+
+            usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if platform.system() == "Darwin":
+                return usage / (1024 * 1024)
+            return usage / 1024
+        except Exception:
+            return 0.0
+
     def toggle_theme(self):
         self.set_theme("light" if self.theme_name == "dark" else "dark")
 
@@ -2631,6 +2705,8 @@ class CinnixSystem:
         self.taskbar.configure(bg=self.theme["panel"])
         self.tray.configure(bg=self.theme["panel"])
         self.clock.configure(bg=self.theme["panel"], fg="#ffffff")
+        self.fps_label.configure(bg=self.theme["panel"], fg="#d7f5d0")
+        self.ram_label.configure(bg=self.theme["panel"], fg="#d7f5d0")
         self.style_panel_button(self.menu_button)
         self.style_panel_button(self.theme_button)
         self.apply_menu_theme()
